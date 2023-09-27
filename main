@@ -1,0 +1,633 @@
+.PROGRAM robot.main()
+        LOCAL place.index, pick.loc, #cur.loc, $error
+        LOCAL jt[], jt1[], jt2[], first.run, req.feed, app.hgt, dep.hgt, status
+        LOCAL error, pre.pick.loc, wait.tim, wait.loc.comp, prob.loc, place.loc, pickupok
+        LOCAL cal.pl.app.hgt, cal.pl.dep.hgt, pick.fail, cal.pl.app.hgt2, pick.fail2, part.index
+        LOCAL pre.pk.loc, pl.wait.mode, check.pause, pl.wait.loc
+        LOCAL comp.z, feed.pre.run, pick.fail.loc, pl.vac.ok
+
+        ABORT 1
+        CYCLE.END 1
+        KILL 1
+
+        pick.fail.reset = FALSE
+
+        SET pre.pick.loc = NULL
+
+        SPEED init.mon.speed MONITOR
+
+        first.run = TRUE
+        $error = ""
+
+        SIGNAL -bo.rt.safety   ;Robot Place Busy
+        SIGNAL bo.rt.run, -bo.rt.error, -bo.pl.comp
+
+        rt.status = rt.robot.run
+
+        CALL rt.move.init($error)
+
+
+        SPEED run.mon.speed MONITOR
+
+        ;**************************************************************************
+        IF teach.mode THEN
+;        TEACH "VISION WAIT" LOCATION
+;        TO CONTINEUE,PRESS "PROCEED" BUTTON
+            $teach.next.ste = "<VISION WAIT LOCATION>"
+            PAUSE
+        END
+;**************************************************************************
+        $rob.status = "Move to Vision Wait Location"
+        CALL set.speed(teach.mode, vis.wait.id, loc)
+        MOVE #vis.wait.loc
+        BREAK
+
+ ; Start Vision task
+        EXECUTE 1 rt.vis.task()
+
+ ; Wait until vision Task is ready
+        $rob.status = "Wait Vision Task Ready"
+
+        DO
+            WAIT
+            CALL rn.check.pause(TRUE)
+            IF rt.stop THEN
+                GOTO 100
+            END
+        UNTIL SIG(bs.sx.ready)
+
+        $sys.message = ""
+
+        SIGNAL -bs.sx.ready
+
+ ; Vision Inspection Start
+        SIGNAL bs.sx.start
+
+        SPEED 10 ALWAYS
+        ACCEL 50, 50
+
+        MULTIPLE ALWAYS
+
+  ;________________________________________________________________________
+        IF NOT teach.mode THEN
+            SIGNAL bo.rt.run, -bo.rt.error
+        END
+  ;________________________________________________________________________
+
+        SPEED 150 ALWAYS
+        ACCEL 80, 80
+
+        MULTIPLE ALWAYS
+        place.index = 0
+        pick.fail = 0
+        pick.fail2 = 0
+
+        req.new.feed = FALSE
+        SET pre.pk.loc = NULL
+        pl.wait.mode = FALSE
+
+        check.pause = TRUE
+
+        TIMER (1) = 0
+        feed.pre.run = FALSE
+        SET pick.fail.loc = NULL
+
+        WHILE TRUE DO
+            WAIT
+ ;;;       REACTE rn.reacte
+
+ 25         COARSE ALWAYS
+
+      ;Feeder operated
+            IF fd.executed THEN
+                SET pick.fail.loc = NULL
+                fd.executed = FALSE
+            END
+
+            FOR loop = 1 TO 12
+                IF count.reset THEN
+                    count.reset = FALSE
+                    place.index = 0
+                END
+;Waiting for feeder and Vision inspect to be completed
+                CASE loop OF
+     ;Move to Vision Wait Position
+                  VALUE 1:
+                    check.pause = FALSE
+
+                    IF NOT SIG(bs.sx.comp) THEN
+                        BREAK
+                    END
+
+                  VALUE 2:
+                    check.pause = FALSE
+                    $rob.status = "Wait Vision Inspect Completed"
+
+     ; Wait Vision Inspection completed
+                    DO
+                        WAIT
+                        CALL rn.check.pause(TRUE)
+                        IF rt.stop THEN
+                            GOTO 100
+                        END
+                    UNTIL SIG(bs.sx.comp)
+
+                    inst.index = 1
+                    SIGNAL -bs.sx.comp
+
+                  VALUE 3:
+                    check.pause = TRUE
+
+ 26                 IF inst.index <= part.found.num THEN
+;Get the Part Location from Vision Task
+                        SET pick.loc = vis.location[inst.index]
+
+                        IF DISTANCE(pick.loc,pre.pk.loc) <= 5 THEN
+                            req.new.feed = TRUE
+                            $rob.status = "Move to Vision Wait Location"
+                            CALL set.speed(teach.mode, vis.wait.id, loc)
+                            MOVE #vis.wait.loc
+             ;; BREAK
+ ; Vision Inspection Start
+                            SIGNAL bs.sx.start
+                            loop = 0
+                            GOTO 25
+                        END
+
+;Check Inrange
+                        IF INRANGE(pick.loc) <> 0 THEN
+                            inst.index = inst.index+1
+                            IF part.found.num == 1 THEN
+                                req.new.feed = TRUE
+                                $rob.status = "Move to Vision Wait Location"
+                                CALL set.speed(teach.mode, vis.wait.id, loc)
+                                MOVE #vis.wait.loc
+            ;;    BREAK
+ ; Vision Inspection Start
+                                SIGNAL bs.sx.start
+                                loop = 0
+                                GOTO 25
+                            ELSE
+                                GOTO 26
+                            END
+                        ELSE
+                            SET pre.pk.loc = pick.loc
+                        END
+
+;Trans to offset values.
+                        DECOMPOSE jt[1] = pick.loc
+                        IF ABS(jt[5]) < 50 THEN
+                            SET pick.loc = pick.loc:TRANS(pk.x.offset,pk.y.offset,,,180,pk.t.offset)
+
+                        ELSE
+                            SET pick.loc = pick.loc:TRANS(pk.x.offset,pk.y.offset,,,,pk.t.offset)
+                        END
+
+                        CALL rt.z.comp(pick.loc, comp.z)
+
+                        DECOMPOSE jt[1] = pick.loc
+                        SET pick.loc = TRANS(jt[1],jt[2],comp.z,jt[4],jt[5],jt[6])
+
+                        IF teach.mode THEN
+;**************************************************************************
+;        TEACH "PART PICK-UP" LOCATION - APP
+;        TO CONTINEUE,PRESS "PROCEED" BUTTON
+                            $teach.next.ste = "<PICK-UP - APP>"
+                            PAUSE
+                        END
+;**************************************************************************
+                        $rob.status = "Pick-Up Part"
+
+                        FINE
+                        CALL set.speed(teach.mode, pick.id, app)
+                        APPRO pick.loc, pk.app.hgt
+                        SIGNAL bo.gr.vac.on
+                    ELSE
+                        $rob.status = "Move to Vision Wait Location"
+                        CALL set.speed(teach.mode, vis.wait.id, loc)
+                        MOVE #vis.wait.loc
+            ;;    BREAK
+ ; Vision Inspection Start
+                        SIGNAL bs.sx.start
+                        loop = 0
+                        GOTO 25
+                    END
+
+                  VALUE 4:
+                    check.pause = FALSE
+
+                    IF teach.mode THEN
+;**************************************************************************
+;        TEACH "PART PICK-UP" LOCATION - LOC
+;        TO CONTINEUE,PRESS "PROCEED" BUTTON
+                        $teach.next.ste = "<PART PICK-UP - LOC>"
+                        PAUSE
+                    END
+
+                    SIGNAL bo.gr.vac.on
+
+                    CALL set.speed(teach.mode, pick.id, loc)
+                    MOVES pick.loc
+
+                    IF part.found.num <= 1 THEN
+                        WHILE STATE(10) < perc.move.frun DO
+                            IF rt.stop GOTO 100
+                            RELEASE -1
+                        END
+                        feed.pre.run = TRUE
+                        SIGNAL bs.fd.start
+                    ELSE
+                        feed.pre.run = FALSE
+                    END
+
+                    BREAK
+
+;Check vacuum Sensor
+                    IF check.vac.sen THEN
+
+    ;Check Vacuum Sensor
+                        $rob.status = "Wait Vacuum ON"
+                        CALL rn.wait.sig(bi.gr.vac.sen, 0.3, status)
+
+                        IF status <> 0 THEN
+                            IF NOT SIG(bi.gr.vac.sen) THEN
+                   ;;;                                inst.index = inst.index+1
+;;;                                CALL set.speed(teach.mode, pick.id, dep)
+;;;                                DEPARTS pk.dep.hgt
+;;;
+;;;                                $rob.status = "Move to Vision Wait Location"
+;;;                                SIGNAL bs.sx.start
+;;;                                CALL set.speed(teach.mode, vis.wait.id, loc)
+;;;                                MOVE #vis.wait.loc
+;;;                        ;;BREAK
+;;; ; Vision Inspection Start
+;;;                                SIGNAL bs.sx.start
+;;;                                loop = 0
+;;;                                GOTO 25
+
+                            END
+                        ELSE
+
+                        END
+                    ELSE
+                        CALL rn.wait.time(pk.dwell.time)
+ 28                 END
+
+;;                    IF part.found.num <= 1 THEN
+;;                        feed.pre.run = TRUE
+;;                        SIGNAL bs.fd.start
+;;                    ELSE
+;;                        feed.pre.run = FALSE
+;;                    END
+
+                  VALUE 5:
+                    check.pause = TRUE
+
+ 30                 IF teach.mode THEN
+;**************************************************************************
+;        TEACH "PART PICK-UP" LOCATION - DEP
+;        TO CONTINEUE,PRESS "PROCEED" BUTTON
+                        $teach.next.ste = "<PICK-UP - DEP>"
+                        PAUSE
+                    END
+
+                    CALL set.speed(teach.mode, pick.id, dep)
+                    DEPARTS pk.dep.hgt
+
+                  VALUE 666:
+;**************************************************************************
+                    IF teach.mode THEN
+;        TEACH "VISION WAIT" LOCATION
+;        TO CONTINEUE,PRESS "PROCEED" BUTTON
+                        $teach.next.ste = "<VISION WAIT LOCATION>"
+                        PAUSE
+                    END
+;**************************************************************************
+                    $rob.status = "Move to Vision Wait Location"
+                    CALL set.speed(teach.mode, vis.wait.id, loc)
+                    MOVE #vis.wait.loc
+                  VALUE 7:
+
+                    IF teach.mode THEN
+                        IF place.index == 1 THEN
+;**************************************************************************
+;        TEACH "PLACE WAIT " LOCATION - LOC
+;        TO CONTINEUE,PRESS "PROCEED" BUTTON
+                            $teach.next.ste = "<PLACE WAIT - LOC>"
+                            PAUSE
+                        END
+                        SIGNAL bi.pl.request
+                    END
+
+                    IF teach.mode OR cycle.mode THEN
+                        SIGNAL bi.pl.request
+                    END
+
+                  VALUE 8:
+                    check.pause = TRUE
+
+                    part.index = work.part.num-place.index
+                    DECOMPOSE jt[1] = place.loc[model.num]
+
+                    IF place.index <= 2 THEN
+                        SET place.loc = TRANS(jt[1],jt[2],jt[3]-part.index*pt.thickness,jt[4],jt[5],jt[6])
+                    ELSE
+                        SET place.loc = TRANS(jt[1],jt[2],jt[3],jt[4],jt[5],jt[6])
+                    END
+
+                    DECOMPOSE jt[1] = place.loc
+
+       ;;             IF SIG(bi.pl.request) OR teach.mode OR cycle.mode THEN
+                    IF place.index == work.part.num-1 THEN
+                        cal.pl.app.hgt = pl.app.hgt
+                        SET place.loc = TRANS(jt[1],jt[2],jt[3]+5,jt[4],jt[5],jt[6])
+                    ELSE
+                        IF place.index == 1 THEN
+                            cal.pl.app.hgt = pl.app.hgt
+                            SET place.loc = TRANS(jt[1],jt[2],jt[3],jt[4],jt[5],jt[6])
+                        ELSE
+                            cal.pl.app.hgt = pl.app.hgt
+                            SET place.loc = TRANS(jt[1],jt[2],jt[3],jt[4],jt[5],jt[6])
+                        END
+                    END
+
+                    SET pl.wait.loc = TRANS(jt[1]-40,jt[2],jt[3]+pl.app.hgt,jt[4],jt[5],jt[6])
+
+                    cal.pl.dep.hgt = pl.dep.hgt
+
+                    IF teach.mode THEN
+;**************************************************************************
+            ;  TEACH "PLACE " LOCATION - APP
+            ;  TO CONTINEUE,PRESS "PROCEED" BUTTON
+                        $teach.next.ste = "<PLACE - APP>"
+                        PAUSE
+                    END
+;**************************************************************************
+
+                    IF SIG(bi.pl.request) THEN
+
+                        $rob.status = "Move To Place Approach"
+                        CALL set.speed(teach.mode, place.id, app)
+                        APPRO place.loc, cal.pl.app.hgt
+                        pl.wait.mode = FALSE
+
+                    ELSE
+                        $rob.status = "Move To Place Approach"
+                        CALL set.speed(teach.mode, place.wait.id, loc)
+                        MOVE pl.wait.loc
+                        pl.wait.mode = TRUE
+                    END
+
+                    WHILE STATE(10) < perc.move.vrun DO
+                        RELEASE -1
+                        CALL rn.check.pause(TRUE)
+                        IF rt.stop GOTO 100
+                    END
+
+             ; Vision Inspection Start
+                    SIGNAL bs.sx.start
+
+                    IF check.vac.sen THEN
+                        IF NOT SIG(bi.gr.vac.sen) THEN
+                            pick.fail2 = pick.fail2+1
+                            CALL rt.reject()
+                            IF pick.fail2 >= 5 THEN
+                                SIGNAL -bo.gr.vac.on
+                                error = ec.vac.on.fail
+                                CALL rt.error(error, $error)
+                                GOTO 100
+                            ELSE
+                                loop = 0
+                                GOTO 25
+                            END
+                        ELSE
+                            pick.fail2 = 0
+                        END
+                    END
+
+                    SET pre.pk.loc = NULL
+
+  ;Wait Place Ready Signal From PLC
+                    IF NOT teach.mode THEN
+                        IF NOT SIG(bi.pl.request) THEN
+                            $rob.status = "Wait Place Ready From PLC"
+                            WHILE NOT SIG(bi.pl.request) DO
+                                BREAK
+                                WAIT
+                                IF rt.stop GOTO 100
+                                CALL rn.check.pause(TRUE)
+
+                                IF check.vac.sen THEN
+                                    IF NOT SIG(bi.gr.vac.sen) THEN
+                                        CALL rt.reject()
+                                        loop = 0
+                                        GOTO 25
+                                    END
+                                END
+                            END
+
+                            IF check.vac.sen THEN
+                                IF NOT SIG(bi.gr.vac.sen) THEN
+                                    CALL rt.reject()
+                                    loop = 0
+                                    GOTO 25
+                                END
+                            END
+
+                        ELSE
+
+                        END
+                    END
+
+                    IF NOT teach.mode THEN
+                        IF pl.wait.mode == TRUE THEN
+                            $rob.status = "Move To Place Approach"
+                            CALL set.speed(teach.mode, place2.id, app)
+                            APPRO place.loc, cal.pl.app.hgt
+                            BREAK
+                        END
+                    END
+
+                  VALUE 9:
+                    check.pause = FALSE
+ ;Recheck Vacuum Sensor.
+;If Vacuum Sensor does not turn on, discard the product to the Trash position.
+;;;;;
+;;;;;                    WHILE STATE(10) < perc.move.pl.ap DO
+;;;;;                        WAIT
+;;;;;                        CALL rn.check.pause(FALSE)
+;;;;;                        IF rt.stop GOTO 100
+;;;;;                    END
+
+                  VALUE 10:
+                    check.pause = FALSE
+
+
+                    IF teach.mode THEN
+;**************************************************************************
+;        TEACH "PLACE " LOCATION - LOC
+;        TO CONTINEUE,PRESS "PROCEED" BUTTON
+                        $teach.next.ste = "<PLACE - LOC>"
+                        PAUSE
+                    END
+;**************************************************************************
+                    $rob.status = "Place Part to M/C"
+
+                    IF teach.mode THEN
+                        DECOMPOSE jt[1] = place.loc[model.num]
+                        SET place.loc = TRANS(jt[1],jt[2],jt[3]+place.index*pt.thickness,jt[4],jt[5],jt[6])
+                    END
+
+                    SIGNAL bo.rt.safety           ;Robot Place Busy
+
+                    COARSE
+
+                    CALL set.speed(teach.mode, place.id, loc)
+                    MOVES place.loc
+
+                    WHILE STATE(10) < perc.move.pl.fi DO
+                        RELEASE -1
+                        CALL rn.check.pause(FALSE)
+                        IF rt.stop GOTO 100
+                    END
+                    IF check.vac.sen THEN
+                        IF NOT SIG(bi.gr.vac.sen) THEN
+                            pl.vac.ok = FALSE
+
+                            pick.fail = pick.fail+1
+
+                            IF pick.fail >= 5 THEN
+                                SIGNAL -bo.gr.vac.on
+                                CALL set.speed(teach.mode, pick.id, dep)
+                                DEPARTS pk.dep.hgt
+
+                                $rob.status = "Move to Vision Wait Location"
+                                CALL set.speed(teach.mode, vis.wait.id, loc)
+                                MOVE #vis.wait.loc
+                                BREAK
+                                error = ec.vac.on.fail
+                                CALL rt.error(error, $error)
+                                GOTO 100
+                            END
+                        ELSE
+                            pl.vac.ok = TRUE
+                            pick.fail = 0
+                        END
+                    ELSE
+                        pl.vac.ok = TRUE
+                    END
+
+                    SIGNAL -bo.gr.vac.on
+                    IF place.index == 0 THEN
+                        BREAK
+                    END
+
+                    IF check.vac.sen THEN
+;;
+;;    ;Check Vacuum Sensor
+                        CALL rn.wait.sig(-bi.gr.vac.sen, 1, status)
+                        IF rt.stop GOTO 100
+                    ELSE
+         ;;               CALL rn.wait.time(pl.dwell.time)
+                    END
+
+         ;;           CALL rn.wait.time(pl.dwell.time)
+
+                  VALUE 11:
+                    check.pause = TRUE
+
+                    IF teach.mode THEN
+;**************************************************************************
+;        TEACH "PLACE " LOCATION - DEP
+;        TO CONTINEUE,PRESS "PROCEED" BUTTON
+                        $teach.next.ste = "<PLACE - DEP>"
+                        PAUSE
+                    END
+;**************************************************************************
+                    CALL set.speed(teach.mode, place.id, dep)
+                    DEPARTS cal.pl.dep.hgt
+
+ ;;;                   BREAK
+
+                    SIGNAL -bo.rt.safety   ;Robot Place Busy
+
+                    IF pl.vac.ok THEN
+                        place.index = place.index+1
+                    END
+
+                  VALUE 12:
+                    check.pause = FALSE
+                    IF place.index >= work.part.num THEN
+                        place.index = 0
+
+                        IF (NOT teach.mode) AND (NOT cycle.mode) THEN
+                            BREAK
+
+                            WAIT.EVENT , 0.1
+                            SIGNAL bo.pl.comp
+
+                            CALL set.speed(teach.mode, vis.wait.id, loc)
+                            MOVE #vis.wait.loc
+
+
+                            $rob.status = "Waiting Place Ready OFF from PLC"
+
+            ;+++++++++++++++++++++TEST+++++++++++++++++++++++++++++++++++++++
+            ;;                SIGNAL -2512
+            ;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                            TYPE "Cycle Time : ", TIMER(1)
+
+                            CALL rn.wait.sig(-bi.pl.request, 20, status)
+                            IF rt.stop GOTO 100
+
+                            SIGNAL -bo.pl.comp
+
+                            TIMER (1) = 0
+
+                            IF status <> 0 THEN
+                                error = ec.plc.comm1
+                                CALL rt.error(error, $error)
+                                GOTO 100
+                            END
+                        ELSE
+                            IF (teach.mode OR cycle.mode) GOTO 100
+                        END
+                    ELSE
+;**************************************************************************
+                        IF teach.mode THEN
+;        TEACH "VISION WAIT" LOCATION
+;        TO CONTINEUE,PRESS "PROCEED" BUTTON
+                            $teach.next.ste = "<VISION WAIT LOCATION>"
+                            PAUSE
+                        END
+;**************************************************************************
+                        IF NOT SIG(bs.sx.comp) THEN
+                            IF (place.index == 0) OR (feed.pre.run == TRUE) THEN
+                                $rob.status = "Move to Vision Wait Location "
+                                CALL set.speed(teach.mode, vis.wait.id, loc)
+                                MOVE #vis.wait.loc
+                            END
+                        END
+                    END
+                END
+
+                CALL rn.check.pause(check.pause)
+
+            END
+        END
+
+ 100    IF $error <> "" THEN
+            rt.status = rt.robot.error
+            SIGNAL bo.rt.error
+        ELSE
+            rt.status = rt.robot.run
+        END
+
+        SIGNAL bo.rt.safety, -bo.pl.comp
+
+        rt.stop = TRUE
+
+        RETURN
+
+.END
+
